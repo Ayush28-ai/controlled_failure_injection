@@ -1,5 +1,5 @@
-
 import os
+from typing import Any
 
 import httpx
 
@@ -9,33 +9,92 @@ PROMETHEUS_URL = os.getenv(
     "http://localhost:9090",
 )
 
-# Only expose queries explicitly approved by the application.
-APPROVED_QUERIES = {
+APPROVED_QUERIES: dict[str, str] = {
     "targets_up": "up",
     "http_requests": "bosch_http_requests_total",
+    "http_request_rate": (
+        "sum(rate(bosch_http_requests_total[1m]))"
+    ),
     "container_cpu": (
-        'sum(rate(container_cpu_usage_seconds_total[5m]))'
+        'rate(container_cpu_usage_seconds_total'
+        '{container!=""}[1m])'
     ),
     "container_memory": (
-        "sum(container_memory_working_set_bytes)"
+        'container_memory_working_set_bytes'
+        '{container!=""}'
     ),
 }
 
 
-async def query_prometheus(metric_name: str) -> dict:
-    if metric_name not in APPROVED_QUERIES:
-        raise ValueError("Metric is not allow-listed")
+class PrometheusError(RuntimeError):
+    """Raised when Prometheus cannot return usable data."""
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        response = await client.get(
-            f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query",
-            params={"query": APPROVED_QUERIES[metric_name]},
+
+async def query_prometheus(
+    query_name: str,
+) -> dict[str, Any]:
+    """Execute an approved Prometheus instant query."""
+    if query_name not in APPROVED_QUERIES:
+        raise ValueError(
+            f"Unsupported Prometheus query: {query_name}"
         )
-        response.raise_for_status()
 
-    payload = response.json()
+    query = APPROVED_QUERIES[query_name]
+    url = f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                url,
+                params={"query": query},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+    except (httpx.HTTPError, ValueError) as exc:
+        raise PrometheusError(
+            f"Unable to query Prometheus: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise PrometheusError(
+            "Prometheus returned an invalid response"
+        )
 
     if payload.get("status") != "success":
-        raise RuntimeError("Prometheus query failed")
+        raise PrometheusError(
+            "Prometheus returned an unsuccessful query response"
+        )
 
-    return payload["data"]
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise PrometheusError(
+            "Prometheus response did not contain valid data"
+        )
+
+    return data
+
+
+async def get_metric_summary() -> dict[str, Any]:
+    """Collect dashboard metrics without treating missing data as zero."""
+    summary: dict[str, Any] = {}
+
+    for metric_name in (
+        "targets_up",
+        "http_requests",
+        "http_request_rate",
+    ):
+        try:
+            data = await query_prometheus(metric_name)
+            summary[metric_name] = {
+                "available": True,
+                "result": data.get("result", []),
+            }
+        except (PrometheusError, ValueError) as exc:
+            summary[metric_name] = {
+                "available": False,
+                "error": str(exc),
+                "result": [],
+            }
+
+    return summary
