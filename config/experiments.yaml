@@ -1,0 +1,13 @@
+
+simulation_mode: true
+
+max_duration_seconds: 30
+
+allowed_scenarios:
+  - service_shutdown
+  - dependency_delay
+  - traffic_spike
+
+allowed_targets:
+  - store-api
+  - payment-mock

@@ -1,0 +1,27 @@
+
+services:
+  store-web:
+    name: Store Frontend
+    type: frontend
+
+  store-api:
+    name: Store API
+    type: application
+
+  store-db:
+    name: Store Database
+    type: database
+
+  payment-mock:
+    name: Payment Mock
+    type: dependency
+
+dependencies:
+  - source: store-web
+    target: store-api
+
+  - source: store-api
+    target: store-db
+
+  - source: store-api
+    target: payment-mock
